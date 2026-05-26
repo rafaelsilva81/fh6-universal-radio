@@ -4,9 +4,9 @@
 #   PS> .\scripts\build.ps1
 #
 # Output:
-#   dist\version.dll        the proxy DLL (drops next to forzahorizon6.exe)
-#   dist\fh6-radio\ui\      dashboard (mounted at http://localhost:<port>)
-#   dist\config.example.toml  copy to fh6-radio\config.toml on first run
+#   dist\version.dll            the proxy DLL (drops next to forzahorizon6.exe)
+#   dist\fh6-radio\ui\          dashboard (mounted at http://localhost:<port>)
+#   dist\fh6-radio\config.toml  seeded from config.example.toml
 
 $ErrorActionPreference = "Stop"
 $root  = Split-Path -Parent $PSScriptRoot
@@ -63,7 +63,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $dist "fh6-radio") | Out-Nu
 
 Copy-Item (Join-Path $build "Release\version.dll") $dist
 Copy-Item -Recurse (Join-Path $root "ui\dist") (Join-Path $dist "fh6-radio\ui")
-Copy-Item (Join-Path $root "config.example.toml") $dist
+Copy-Item (Join-Path $root "config.example.toml") (Join-Path $dist "fh6-radio\config.toml")
 
 $readme = @'
 FH6 Universal Radio

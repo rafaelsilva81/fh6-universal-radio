@@ -40,7 +40,7 @@ if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Force -Path $data
 Copy-Item -Recurse -Force (Join-Path $dist "fh6-radio\ui") $dataDir
 $cfg = Join-Path $dataDir "config.toml"
 if (-not (Test-Path $cfg)) {
-    Copy-Item (Join-Path $dist "config.example.toml") $cfg
+    Copy-Item (Join-Path $dist "fh6-radio\config.toml") $cfg
     Write-Host "  + fh6-radio\config.toml  (seeded from example)" -ForegroundColor Yellow
 }
 
