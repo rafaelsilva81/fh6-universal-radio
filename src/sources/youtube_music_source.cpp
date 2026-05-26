@@ -13,8 +13,8 @@ namespace fh6::sources {
 
 namespace {
 
-// PCM contract written by ffmpeg: 44100 Hz * 2 ch * 2 bytes.
-constexpr std::uint64_t kPcmBytesPerSec = 44100ull * 2ull * 2ull;
+// PCM contract written by ffmpeg: 48000 Hz * 2 ch * 2 bytes.
+constexpr std::uint64_t kPcmBytesPerSec = 48000ull * 2ull * 2ull;
 
 // CreateProcess hands one string to the child via GetCommandLineW, so any
 // argument with whitespace must be double-quoted.
@@ -312,7 +312,7 @@ void YouTubeMusicSource::start_pipe_locked() {
     yt_cmd += L"-- " + quote(widen(play_url));
 
     std::wstring ff_cmd = quote(ff) + L" -loglevel error -i pipe:0 -f s16le "
-                                      L"-acodec pcm_s16le -ar 44100 -ac 2 pipe:1";
+                                      L"-acodec pcm_s16le -ar 48000 -ac 2 pipe:1";
 
     std::wstring tl_cmd = quote(yt) + L" --skip-download --no-warnings --no-playlist "
                                       L"--print \"%(title)s\" "

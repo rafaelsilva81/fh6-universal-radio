@@ -83,8 +83,8 @@ public:
     DSPMode mode() const noexcept { return mode_.load(std::memory_order_acquire); }
     void set_mode(DSPMode m) noexcept;
 
-    // [0, 1]. The callback applies an extra ×1.6 trim so our mix matches the
-    // ~+4 dB broadcast loudness baked into the game's other stations.
+    // [0, 1]. Pure linear multiplier on the S16->float conversion; 1.0 is
+    // unity (bit-perfect).
     float gain() const noexcept { return gain_.load(std::memory_order_acquire); }
     void set_gain(float g) noexcept { gain_.store(g, std::memory_order_release); }
 
@@ -120,14 +120,7 @@ private:
     std::byte* radio_stream_ = nullptr;
 
     std::atomic<DSPMode> mode_{DSPMode::pcm};
-    std::atomic<float> gain_{0.8f};
-
-    // Resampler scratch. Only the mixer thread touches these.
-    double resample_phase_ = 0.0;
-    int16_t prev_l_ = 0, prev_r_ = 0;
-    int16_t cur_l_ = 0, cur_r_ = 0;
-    bool have_prev_ = false;
-    bool have_cur_  = false;
+    std::atomic<float> gain_{1.0f};
 
     std::atomic<uint64_t> underruns_{0};
     std::atomic<uint64_t> calls_{0};
