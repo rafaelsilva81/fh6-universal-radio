@@ -375,7 +375,7 @@ void YouTubeMusicSource::start_pipe_locked() {
     // `--no-playlist` keeps yt-dlp on the single video even if the resolved
     // queue item carries a leftover list= param.
     std::wstring yt_cmd = quote(yt) + L" --no-warnings --no-progress "
-                                      L"--format bestaudio --no-playlist -o - ";
+                                      L"--format bestaudio/best --no-playlist -o - ";
     if (!cfg_.cookies_path.empty())
         yt_cmd += L"--cookies " + quote(cfg_.cookies_path.wstring()) + L" ";
     yt_cmd += L"-- " + quote(widen(play_url));
