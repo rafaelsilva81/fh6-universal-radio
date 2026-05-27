@@ -121,6 +121,8 @@ json config_to_json(const Config& c) {
              {"yt_dlp_path", path_s(c.youtube_music.yt_dlp_path)},
              {"ffmpeg_path", path_s(c.youtube_music.ffmpeg_path)},
              {"default_playlist", c.youtube_music.default_playlist},
+             {"normalize_volume", c.youtube_music.normalize_volume},
+             {"ffmpeg_filters", c.youtube_music.ffmpeg_filters},
          }},
         {"audio",
          json{
@@ -164,6 +166,8 @@ void apply_patch(Config& c, const json& j) {
         c.youtube_music.ffmpeg_path  = pull_path(*it, "ffmpeg_path", c.youtube_music.ffmpeg_path);
         c.youtube_music.default_playlist =
             pull(*it, "default_playlist", c.youtube_music.default_playlist);
+        c.youtube_music.normalize_volume = pull(*it, "normalize_volume", c.youtube_music.normalize_volume);
+        c.youtube_music.ffmpeg_filters = pull(*it, "ffmpeg_filters", c.youtube_music.ffmpeg_filters);
     }
     if (auto it = j.find("audio"); it != j.end()) {
         c.audio.output_gain = pull(*it, "output_gain", c.audio.output_gain);

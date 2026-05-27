@@ -75,6 +75,8 @@ Config load_config(const std::filesystem::path& path) {
     cfg.youtube_music.yt_dlp_path      = pick_path(ym, "yt_dlp_path");
     cfg.youtube_music.ffmpeg_path      = pick_path(ym, "ffmpeg_path");
     cfg.youtube_music.default_playlist = pick<std::string>(ym, "default_playlist", "");
+    cfg.youtube_music.normalize_volume = pick<bool>(ym, "normalize_volume", true);
+    cfg.youtube_music.ffmpeg_filters   = pick<std::string>(ym, "ffmpeg_filters", "");
 
     const auto& au = section(root, "audio");
     cfg.audio.output_gain =
@@ -179,6 +181,8 @@ void save_config(const std::filesystem::path& path, const Config& cfg) {
     e.kv_path("yt_dlp_path", cfg.youtube_music.yt_dlp_path);
     e.kv_path("ffmpeg_path", cfg.youtube_music.ffmpeg_path);
     e.kv("default_playlist", cfg.youtube_music.default_playlist);
+    e.kv("normalize_volume", cfg.youtube_music.normalize_volume);
+    e.kv("ffmpeg_filters", cfg.youtube_music.ffmpeg_filters);
 
     e.header("audio");
     e.kv("output_gain", (double)cfg.audio.output_gain);

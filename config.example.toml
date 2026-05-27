@@ -24,6 +24,8 @@ cookies_path       = ''                # optional Netscape cookies.txt
 yt_dlp_path        = ''                # blank = `yt-dlp` on PATH
 ffmpeg_path        = ''                # blank = `ffmpeg`  on PATH
 default_playlist   = ""
+normalize_volume   = true              # Enable EBU R128 loudness normalization for consistent volume
+ffmpeg_filters     = ''                # Extra ffmpeg audio filters (e.g. lowshelf EQ to reduce tin-can sound)
 
 [audio]
 output_gain = 1.00

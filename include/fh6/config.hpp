@@ -27,6 +27,8 @@ struct YouTubeMusicConfig {
     std::filesystem::path yt_dlp_path; // empty = look up on PATH
     std::filesystem::path ffmpeg_path; // empty = look up on PATH
     std::string default_playlist;
+    bool normalize_volume = true;
+    std::string ffmpeg_filters;
 };
 
 struct AudioConfig {

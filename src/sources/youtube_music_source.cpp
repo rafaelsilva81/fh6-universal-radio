@@ -386,8 +386,20 @@ void YouTubeMusicSource::start_pipe_locked() {
         yt_cmd += L"--cookies " + quote(cfg_.cookies_path.wstring()) + L" ";
     yt_cmd += L"-- " + quote(widen(play_url));
 
-    std::wstring ff_cmd = quote(ff) + L" -loglevel error -i pipe:0 -f s16le "
-                                      L"-acodec pcm_s16le -ar 48000 -ac 2 pipe:1";
+    std::wstring filter_str;
+    if (cfg_.normalize_volume) {
+        filter_str = L"loudnorm=I=-14:TP=-1.5:LRA=11";
+    }
+    if (!cfg_.ffmpeg_filters.empty()) {
+        if (!filter_str.empty()) filter_str += L",";
+        filter_str += widen(cfg_.ffmpeg_filters);
+    }
+
+    std::wstring ff_cmd = quote(ff) + L" -loglevel error -i pipe:0 ";
+    if (!filter_str.empty()) {
+        ff_cmd += L"-af " + quote(filter_str) + L" ";
+    }
+    ff_cmd += L"-f s16le -acodec pcm_s16le -ar 48000 -ac 2 pipe:1";
 
     std::wstring tl_cmd = quote(yt) + L" --skip-download --no-warnings --no-playlist "
                                       L"--encoding UTF-8 "

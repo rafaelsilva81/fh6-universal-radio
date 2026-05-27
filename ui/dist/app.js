@@ -130,6 +130,8 @@ const SCHEMA = [
   ]],
   ["youtube_music", "YouTube Music", [
     ["enabled",          "Enabled",                "checkbox"],
+    ["normalize_volume", "Normalize volume (EBU R128)", "checkbox"],
+    ["ffmpeg_filters",   "Extra FFmpeg filters",   "text"],
     ["cookies_path",     "cookies.txt (optional)", "text"],
     ["yt_dlp_path",      "yt-dlp path (optional)", "text"],
     ["ffmpeg_path",      "ffmpeg path (optional)", "text"],
