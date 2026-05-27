@@ -94,6 +94,8 @@ json source_to_json(IAudioSource* s) {
     };
     if (auto* lf = dynamic_cast<sources::LocalFileSource*>(s))
         j["details"]["track_count"] = lf->track_count();
+    if (auto* yt = dynamic_cast<sources::YouTubeMusicSource*>(s))
+        j["details"]["shuffle"] = yt->shuffle();
     return j;
 }
 
@@ -122,6 +124,7 @@ json config_to_json(const Config& c) {
              {"ffmpeg_path", path_s(c.youtube_music.ffmpeg_path)},
              {"default_playlist", c.youtube_music.default_playlist},
              {"normalize_volume", c.youtube_music.normalize_volume},
+             {"shuffle", c.youtube_music.shuffle},
          }},
         {"audio",
          json{
@@ -166,6 +169,7 @@ void apply_patch(Config& c, const json& j) {
         c.youtube_music.default_playlist =
             pull(*it, "default_playlist", c.youtube_music.default_playlist);
         c.youtube_music.normalize_volume = pull(*it, "normalize_volume", c.youtube_music.normalize_volume);
+        c.youtube_music.shuffle = pull(*it, "shuffle", c.youtube_music.shuffle);
     }
     if (auto it = j.find("audio"); it != j.end()) {
         c.audio.output_gain = pull(*it, "output_gain", c.audio.output_gain);
@@ -458,6 +462,14 @@ struct HttpServer::Impl {
             if (was_active) mgr.ring().drain();
             yt->play();
             mgr.switch_to("youtube_music");
+            return ok();
+        }
+        if (m == "POST" && p == "/api/source/youtube_music/shuffle") {
+            auto* yt = find_typed<sources::YouTubeMusicSource>("youtube_music");
+            if (!yt) return fail(404, "youtube_music not registered");
+            auto shuffle = json::parse(req.body).at("shuffle").get<bool>();
+            yt->set_shuffle(shuffle);
+            store.patch([shuffle](Config& c) { c.youtube_music.shuffle = shuffle; });
             return ok();
         }
         if (m == "POST" && p == "/api/source/local_files/rescan") {
