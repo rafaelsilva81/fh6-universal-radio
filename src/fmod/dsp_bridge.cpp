@@ -257,8 +257,14 @@ void DSPBridge::install_dsp_locked(const RadioInstance& radio_inst) noexcept {
 
     // addDSP wants the packed handle zero-extended to 64 bits.
     const auto channel = static_cast<uint64_t>(handle);
-    // Insert at HEAD (0)
-    if (!seh_call([&] { rc = fns_.channel_control_add_dsp(channel, 0, dsp); }) || rc != 0) {
+    
+    bool added = false;
+    if (seh_call([&] { rc = fns_.channel_control_add_dsp(channel, 0, dsp); }) && rc == 0) {
+        added = true;
+        log::info("[dsp] successfully installed dsp={} on handle=0x{:X} at HEAD index", dsp, handle);
+    }
+
+    if (!added) {
         if (rc != 3) { // err_invalid_handle is common on fast track switches
             log::warn("[dsp] ChannelControl::addDSP failed, rc={} handle=0x{:X}", rc, handle);
         }
@@ -392,7 +398,8 @@ uint32_t __stdcall DSPBridge::read_callback(void* dsp_state_ptr, float* in_buf, 
         return 0;
     }
 
-    const float gain = b->gain();
+
+    const float gain = b->gain() * 0.75f;
     if (gain <= 0.0f) {
         stats();
         return 0;
