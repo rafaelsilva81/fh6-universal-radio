@@ -1,6 +1,7 @@
 # Build + staging output
 build/
 /dist/
+radio.zip
 
 # Downloaded by scripts\get-deps.ps1
 third_party/
