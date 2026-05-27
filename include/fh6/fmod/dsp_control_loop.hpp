@@ -36,17 +36,10 @@ private:
     const RadioInstance* select_instance(const DiscoveryResult& disc,
                                          bool require_live) const noexcept;
 
-    // Re-discover and switch to an instance with a live channel handle when
-    // our DSP has stopped receiving reads (channel destroyed by FMOD with
-    // no replacement written to +0x20).
-    void recover_stale_dsp() noexcept;
-
     DSPBridge& bridge_;
     const PEImage& img_;
     std::atomic<float> configured_gain_;
     MetadataInjector meta_;
-    std::uint64_t prev_calls_ = 0;
-    int stale_ticks_          = 0;
     std::jthread thread_;
 };
 

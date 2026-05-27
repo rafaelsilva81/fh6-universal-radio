@@ -84,6 +84,11 @@ struct FMOD_DSP_DESCRIPTION {
 };
 static_assert(sizeof(FMOD_DSP_DESCRIPTION) == 216);
 
+struct FMOD_DSP_STATE {
+    void* instance;
+    void* plugindata;
+};
+
 // The `System::createDSP` LEA is sometimes not yet resident in the host
 // process when our scanner runs at DllMain. Pulled out so install_dsp_locked
 // can retry against a fresh parse of the same module.
@@ -135,11 +140,16 @@ bool resolve_fmod_signatures(const PEImage& img, FMODFns& out) noexcept {
 }
 
 DSPBridge::DSPBridge(AudioSourceManager& mgr, const FMODFns& fns) : mgr_{mgr}, fns_{fns} {
+    history_ = std::make_unique<float[]>(kHistoryFrames * 2);
+    std::memset(history_.get(), 0, kHistoryFrames * 2 * sizeof(float));
     g_bridge = this;
 }
 
 DSPBridge::~DSPBridge() {
-    release_current_dsp_locked();
+    std::scoped_lock lk{instances_mu_};
+    for (auto& slot : slots_) {
+        remove_dsp_locked(slot);
+    }
     if (g_bridge == this) g_bridge = nullptr;
 }
 
@@ -173,16 +183,17 @@ bool DSPBridge::validate_handle(uint32_t handle) const noexcept {
     return inst != nullptr;
 }
 
-void DSPBridge::release_current_dsp_locked() noexcept {
-    if (!current_dsp_) return;
-    if (current_handle_)
-        seh_call([&] { fns_.channel_control_rem_dsp(current_handle_, current_dsp_); });
-    seh_call([&] { fns_.dsp_release(current_dsp_); });
-    current_dsp_    = nullptr;
-    current_handle_ = 0;
+void DSPBridge::remove_dsp_locked(InstalledDSP& inst) noexcept {
+    void* dsp = inst.dsp.exchange(nullptr, std::memory_order_acq_rel);
+    if (!dsp) return;
+    if (inst.handle)
+        seh_call([&] { fns_.channel_control_rem_dsp(inst.handle, dsp); });
+    seh_call([&] { fns_.dsp_release(dsp); });
+    inst.handle = 0;
 }
 
-void DSPBridge::install_dsp_locked(uint32_t handle) noexcept {
+void DSPBridge::install_dsp_locked(const RadioInstance& radio_inst) noexcept {
+    uint32_t handle = read_live_handle(radio_inst.radio_stream);
     if (!fmod_system_ || !handle) return;
 
     // Lazy-resolve createDSP. The first install runs long after FMOD is up
@@ -209,7 +220,23 @@ void DSPBridge::install_dsp_locked(uint32_t handle) noexcept {
     desc.numinputbuffers  = 1;
     desc.numoutputbuffers = 1;
     desc.read             = reinterpret_cast<void*>(&DSPBridge::read_callback);
-    desc.userdata         = this;
+    InstalledDSP* free_slot = nullptr;
+    for (auto& slot : slots_) {
+        if (!slot.dsp.load(std::memory_order_relaxed)) {
+            free_slot = &slot;
+            break;
+        }
+    }
+    if (!free_slot) {
+        log::warn("[dsp] no free slots for new FMOD channel!");
+        return;
+    }
+
+    free_slot->handle = handle;
+    free_slot->radio_stream = radio_inst.radio_stream;
+    free_slot->read_head.store(write_head_.load(std::memory_order_acquire), std::memory_order_relaxed);
+    
+    desc.userdata         = nullptr;
 
     void* dsp   = nullptr;
     uint32_t rc = ~0u;
@@ -230,14 +257,16 @@ void DSPBridge::install_dsp_locked(uint32_t handle) noexcept {
 
     // addDSP wants the packed handle zero-extended to 64 bits.
     const auto channel = static_cast<uint64_t>(handle);
+    // Insert at HEAD (0)
     if (!seh_call([&] { rc = fns_.channel_control_add_dsp(channel, 0, dsp); }) || rc != 0) {
-        log::warn("[dsp] addDSP failed r={}", rc);
+        if (rc != 3) { // err_invalid_handle is common on fast track switches
+            log::warn("[dsp] ChannelControl::addDSP failed, rc={} handle=0x{:X}", rc, handle);
+        }
         seh_call([&] { fns_.dsp_release(dsp); });
         return;
     }
 
-    current_dsp_    = dsp;
-    current_handle_ = handle;
+    free_slot->dsp.store(dsp, std::memory_order_release);
     log::info("[dsp] installed dsp={} on handle=0x{:X}", dsp, handle);
 
     // Pin the channel in loop mode so FMOD doesn't tear it down when the
@@ -253,9 +282,35 @@ void DSPBridge::install_dsp_locked(uint32_t handle) noexcept {
     }
 }
 
-void DSPBridge::set_target(const RadioInstance& inst, void* fmod_system) noexcept {
-    fmod_system_  = fmod_system;
-    radio_stream_ = inst.radio_stream;
+void DSPBridge::sync_instances(const std::vector<RadioInstance>& active_instances, void* fmod_system) noexcept {
+    std::scoped_lock lk{instances_mu_};
+    fmod_system_ = fmod_system;
+    
+    for (auto& slot : slots_) {
+        void* dsp = slot.dsp.load(std::memory_order_relaxed);
+        if (!dsp) continue;
+        if (!validate_handle(slot.handle) || read_live_handle(slot.radio_stream) != slot.handle) {
+            log::info("[dsp] tearing down dead dsp={} on handle=0x{:X}", dsp, slot.handle);
+            remove_dsp_locked(slot);
+        }
+    }
+    
+    for (const auto& radio_inst : active_instances) {
+        uint32_t live_handle = read_live_handle(radio_inst.radio_stream);
+        if (!live_handle) continue;
+        
+        bool already_installed = false;
+        for (const auto& slot : slots_) {
+            if (slot.dsp.load(std::memory_order_relaxed) && slot.radio_stream == radio_inst.radio_stream && slot.handle == live_handle) {
+                already_installed = true;
+                break;
+            }
+        }
+        
+        if (!already_installed) {
+            install_dsp_locked(radio_inst);
+        }
+    }
 }
 
 uint32_t DSPBridge::read_live_handle(std::byte* radio_stream) const noexcept {
@@ -266,34 +321,25 @@ uint32_t DSPBridge::read_live_handle(std::byte* radio_stream) const noexcept {
     return validate_handle(handle) ? handle : 0;
 }
 
-bool DSPBridge::current_handle_alive() const noexcept {
-    return current_handle_ != 0 && fns_.ready() && validate_handle(current_handle_);
-}
-
 bool DSPBridge::channel_handle_alive(std::byte* radio_stream) const noexcept {
     return read_live_handle(radio_stream) != 0;
 }
 
-void DSPBridge::retarget_if_needed() noexcept {
-    if (mode() != DSPMode::pcm || !fmod_system_) return;
-    const uint32_t handle = read_live_handle(radio_stream_);
-    if (handle == current_handle_) return;
-    // No live handle on the RadioStreamFmod. If we still think we're installed
-    // on a dead one, release it so we stop querying the stale handle.
-    if (!handle) {
-        if (current_handle_) release_current_dsp_locked();
-        return;
+bool DSPBridge::has_active_instances() const noexcept {
+    std::scoped_lock lk{instances_mu_};
+    for (const auto& slot : slots_) {
+        if (slot.dsp.load(std::memory_order_relaxed)) return true;
     }
+    return false;
+}
 
-    log::info("[dsp] retargeting -> handle 0x{:X}", handle);
-    release_current_dsp_locked();
-    install_dsp_locked(handle);
+void DSPBridge::push_history(const float* pcm, std::size_t num_frames) noexcept {
 }
 
 // FMOD DSP read callback (mixer thread). Sources write 48 kHz S16 stereo
 // (miniaudio / ffmpeg resample upstream), which is FMOD's master rate, so
 // the callback is a straight int16 -> float conversion with gain.
-uint32_t __stdcall DSPBridge::read_callback(void* /*dsp_state*/, float* in_buf, float* out_buf,
+uint32_t __stdcall DSPBridge::read_callback(void* dsp_state_ptr, float* in_buf, float* out_buf,
                                             uint32_t length, int32_t in_channels,
                                             int32_t* out_channels) {
     auto* b = g_bridge;
@@ -330,52 +376,88 @@ uint32_t __stdcall DSPBridge::read_callback(void* /*dsp_state*/, float* in_buf, 
     // tail, not the stale floats FMOD handed us.
     std::memset(out_buf, 0, total * sizeof(float));
 
+    auto* dsp_state = static_cast<FMOD_DSP_STATE*>(dsp_state_ptr);
+    InstalledDSP* inst = nullptr;
+    if (dsp_state && dsp_state->instance) {
+        for (auto& slot : b->slots_) {
+            if (slot.dsp.load(std::memory_order_relaxed) == dsp_state->instance) {
+                inst = &slot;
+                break;
+            }
+        }
+    }
+
+    if (!inst) {
+        stats();
+        return 0;
+    }
+
     const float gain = b->gain();
     if (gain <= 0.0f) {
         stats();
         return 0;
     }
 
-    // gain<=1.0 + S16 input keeps the float strictly within [-1, 1], but a
-    // misconfigured config.toml could push gain above 1 -- clamp defensively.
-    constexpr float kAmp = 1.0f / 32768.0f;
-    const float scale    = gain * kAmp;
+    uint64_t r = inst->read_head.load(std::memory_order_relaxed);
+    uint64_t w = b->write_head_.load(std::memory_order_acquire);
 
-    // Pull the ring in chunks: one ring.read() per chunk amortises the
-    // ring's two atomic loads over many frames. 1024 frames = 4 KiB stack,
-    // well under any sane FMOD callback budget.
-    constexpr uint32_t kChunkFrames = 1024;
-    int16_t scratch[kChunkFrames * 2];
-    auto& ring = b->mgr_.ring();
+    // Catch-up if the DSP fell too far behind (e.g. paused for >2 seconds)
+    if (w > r + kHistoryFrames) {
+        r = w; // Drop frames, catch up to leading edge
+    }
 
-    for (uint32_t produced = 0; produced < length;) {
-        const uint32_t want_frames = std::min(length - produced, kChunkFrames);
-        const std::size_t got      = ring.read(scratch, want_frames * 4);
-        const uint32_t got_frames  = static_cast<uint32_t>(got / 4);
+    // Pull new frames from ring buffer if we are the leading DSP
+    if (r + length > w) {
+        uint32_t want_frames = static_cast<uint32_t>((r + length) - w);
+        constexpr uint32_t kChunkFrames = 1024;
+        int16_t scratch[kChunkFrames * 2];
+        auto& ring = b->mgr_.ring();
 
-        for (uint32_t f = 0; f < got_frames; ++f) {
-            const float fl = scratch[f * 2 + 0] * scale;
-            const float fr = scratch[f * 2 + 1] * scale;
-            const float L  = fl > 1.0f ? 1.0f : (fl < -1.0f ? -1.0f : fl);
-            const float R  = fr > 1.0f ? 1.0f : (fr < -1.0f ? -1.0f : fr);
+        while (want_frames > 0) {
+            uint32_t chunk = std::min(want_frames, kChunkFrames);
+            std::size_t got_bytes = ring.read(scratch, chunk * 4);
+            uint32_t got_frames = static_cast<uint32_t>(got_bytes / 4);
 
-            float* o = out_buf + static_cast<std::size_t>(produced + f) * out_ch;
-            if (out_ch == 1) {
-                o[0] = (L + R) * 0.5f;
-            } else {
-                o[0]           = L;
-                o[1]           = R;
-                const float dn = (L + R) * 0.5f;
-                for (int32_t c = 2; c < out_ch; ++c) o[c] = dn;
+            for (uint32_t i = 0; i < got_frames; ++i) {
+                std::size_t idx = (w + i) % kHistoryFrames;
+                b->history_[idx * 2]     = scratch[i * 2] * (1.0f / 32768.0f);
+                b->history_[idx * 2 + 1] = scratch[i * 2 + 1] * (1.0f / 32768.0f);
+            }
+            w += got_frames;
+            want_frames -= got_frames;
+            if (got_frames < chunk) {
+                b->underruns_.fetch_add(1, std::memory_order_relaxed);
+                break;
             }
         }
-
-        produced += got_frames;
-        if (got_frames < want_frames) {
-            b->underruns_.fetch_add(1, std::memory_order_relaxed);
-            break;
-        }
+        b->write_head_.store(w, std::memory_order_release);
     }
+
+    // Force FMOD to treat our DSP output as purely Stereo (2 channels).
+    // This allows the game's 3D panner to correctly spatialize the audio into
+    // the Surround Sound space (5.1/7.1). If we don't do this, the 3D panner
+    // receives a 5.1/7.1 signal and distorts it terribly.
+    if (out_channels) *out_channels = 2;
+    out_ch = 2;
+
+    // Now copy from history_ to out_buf, applying gain
+    uint32_t frames_to_copy = static_cast<uint32_t>(std::min<uint64_t>(length, w - r));
+    
+    for (uint32_t i = 0; i < frames_to_copy; ++i) {
+        std::size_t idx = (r + i) % kHistoryFrames;
+        float L = b->history_[idx * 2] * gain;
+        float R = b->history_[idx * 2 + 1] * gain;
+
+        // clamp
+        L = L > 1.0f ? 1.0f : (L < -1.0f ? -1.0f : L);
+        R = R > 1.0f ? 1.0f : (R < -1.0f ? -1.0f : R);
+
+        float* o = out_buf + (i * out_ch);
+        o[0] = L;
+        o[1] = R;
+    }
+
+    inst->read_head.store(r + frames_to_copy, std::memory_order_relaxed);
 
     stats();
     return 0;

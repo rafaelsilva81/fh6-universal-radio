@@ -66,11 +66,16 @@ void ControlLoop::run(const std::stop_token& tok) {
         log::warn("[ctrl] FMOD SystemI resolution failed");
         return;
     }
-    bridge_.set_target(*chosen, fmod_system);
+    std::vector<RadioInstance> targets;
+    for (const auto& i : disc.instances) {
+        if (i.sound_name == kTargetSoundName) targets.push_back(i);
+    }
+    if (targets.empty()) targets.push_back(*chosen);
+
+    bridge_.sync_instances(targets, fmod_system);
     meta_.set_target(chosen->sample_props_body);
-    log::info("[ctrl] targeting RadioStreamFmod @0x{:X} SoundName=\"{}\" SystemI*=0x{:X}",
-              reinterpret_cast<uintptr_t>(chosen->radio_stream), chosen->sound_name,
-              reinterpret_cast<uintptr_t>(fmod_system));
+    log::info("[ctrl] targeted {} RadioStreamFmod instance(s) starting @0x{:X}",
+              targets.size(), reinterpret_cast<uintptr_t>(chosen->radio_stream));
 
     // The radio HUD reads from the SampleProperties slots at a much lower
     // rate than the audio mixer. 4 Hz is more than enough and keeps the
@@ -81,32 +86,30 @@ void ControlLoop::run(const std::stop_token& tok) {
     auto next = std::chrono::steady_clock::now();
     while (!tok.stop_requested()) {
         next += kTick;
-        bridge_.retarget_if_needed();
         bridge_.manager().pump_once();
 
         if (++meta_tick >= kMetaEveryNTicks) {
             meta_tick = 0;
             push_metadata();
+
+            // Check for newly spawned emitters (e.g. driving into festival range, switching views)
+            auto latest_disc = discover_radio_instances(img_);
+            std::vector<RadioInstance> new_targets;
+            const RadioInstance* best = select_instance(latest_disc, true);
+            if (best) {
+                new_targets.push_back(*best);
+            } else {
+                best = select_instance(latest_disc, false);
+                if (best) new_targets.push_back(*best);
+            }
+            if (!new_targets.empty()) {
+                void* fs = resolve_fmod_system(img_, new_targets[0].radio_stream);
+                if (fs) bridge_.sync_instances(new_targets, fs);
+                meta_.set_target(new_targets[0].sample_props_body);
+            }
         }
 
-        // Staleness watchdog: while a source is actively producing audio,
-        // FMOD's mixer should be invoking our read_callback every tick.
-        // If call_count() freezes for ~1s, the channel was destroyed by
-        // FMOD without writing a fresh handle to +0x20 (e.g. placeholder
-        // sample ended). Re-discover and switch to a live channel.
         auto* active          = bridge_.manager().active();
-        const bool busy       = active && (active->playback_state() == PlaybackState::playing ||
-                                           active->playback_state() == PlaybackState::buffering);
-        const std::uint64_t c = bridge_.call_count();
-        if (busy && c == prev_calls_) {
-            if (++stale_ticks_ >= kStaleTickThreshold) {
-                recover_stale_dsp();
-                stale_ticks_ = 0;
-            }
-        } else {
-            stale_ticks_ = 0;
-        }
-        prev_calls_ = c;
 
         const float target = [this, active] {
             if (!active) return 0.0f;
@@ -137,23 +140,6 @@ const RadioInstance* ControlLoop::select_instance(const DiscoveryResult& disc,
         if (!fallback) fallback = &i;
     }
     return fallback;
-}
-
-void ControlLoop::recover_stale_dsp() noexcept {
-    if (bridge_.current_handle_alive()) return;  // false alarm; channel still live
-
-    auto disc = discover_radio_instances(img_);
-    const RadioInstance* chosen = select_instance(disc, /*require_live=*/true);
-    if (!chosen) return;
-
-    void* fmod_system = resolve_fmod_system(img_, chosen->radio_stream);
-    if (!fmod_system) return;
-
-    bridge_.set_target(*chosen, fmod_system);
-    meta_.set_target(chosen->sample_props_body);
-    log::info(R"([ctrl] DSP stale; recovered onto RadioStreamFmod @0x{:X} SoundName="{}")",
-              reinterpret_cast<uintptr_t>(chosen->radio_stream), chosen->sound_name);
-    // Next tick's retarget_if_needed installs the DSP on chosen's fresh handle.
 }
 
 void ControlLoop::push_metadata() noexcept {

@@ -4,8 +4,12 @@
 #include "fh6/fmod/radio_discovery.hpp"
 #include "fh6/ring_buffer.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 namespace fh6 {
 class AudioSourceManager;
@@ -70,6 +74,7 @@ public:
     DSPBridge(const DSPBridge&)            = delete;
     DSPBridge& operator=(const DSPBridge&) = delete;
 
+    void sync_instances(const std::vector<RadioInstance>& active_instances, void* fmod_system) noexcept;
     void set_target(const RadioInstance& inst, void* fmod_system) noexcept;
 
     // Re-attach if the game stored a new channel handle on the RadioStream
@@ -84,6 +89,8 @@ public:
     // True when `radio_stream`+0x20 holds a live FMOD channel handle. Used
     // by the control loop to pick a recovery candidate after staleness.
     bool channel_handle_alive(std::byte* radio_stream) const noexcept;
+
+    bool has_active_instances() const noexcept;
 
     DSPMode mode() const noexcept { return mode_.load(std::memory_order_acquire); }
     void set_mode(DSPMode m) noexcept;
@@ -100,6 +107,8 @@ public:
         return last_out_ch_.load(std::memory_order_relaxed);
     }
 
+    void push_history(const float* pcm, std::size_t num_frames) noexcept;
+
     AudioSourceManager& manager() noexcept { return mgr_; }
 
     static uint32_t __stdcall read_callback(void* dsp_state, float* in_buf, float* out_buf,
@@ -107,23 +116,36 @@ public:
                                             int32_t* out_channels);
 
 private:
+    struct InstalledDSP {
+        std::atomic<void*> dsp{nullptr};
+        uint32_t handle = 0;
+        std::byte* radio_stream = nullptr;
+        alignas(64) std::atomic<uint64_t> read_head{0};
+    };
+
     // True if the resolver accepts the handle (the channel is still live).
     bool validate_handle(uint32_t handle) const noexcept;
     // Returns the live channel handle at radio_stream+0x20, or 0 if absent
     // or dead. Centralises the FMOD read+validate that retarget and the
     // public `*_alive` queries both need.
     uint32_t read_live_handle(std::byte* radio_stream) const noexcept;
-    void release_current_dsp_locked() noexcept;
-    void install_dsp_locked(uint32_t handle) noexcept;
+    void install_dsp_locked(const RadioInstance& radio_inst) noexcept;
+    void remove_dsp_locked(InstalledDSP& inst) noexcept;
 
     AudioSourceManager& mgr_;
     FMODFns fns_;
 
-    void* fmod_system_       = nullptr;
-    void* current_dsp_       = nullptr;
-    uint32_t current_handle_ = 0;
-    mutable uint32_t last_bad_handle_ = 0;  // suppress repeated rc=3 / SEH warnings for the same handle
+    void* fmod_system_ = nullptr;
     std::byte* radio_stream_ = nullptr;
+    
+    std::array<InstalledDSP, 8> slots_;
+    mutable std::mutex instances_mu_;
+    
+    mutable uint32_t last_bad_handle_ = 0;
+
+    static constexpr std::size_t kHistoryFrames = 96000; // 2s @ 48kHz
+    std::unique_ptr<float[]> history_; // L/R interleaved
+    alignas(64) std::atomic<uint64_t> write_head_{0};
 
     std::atomic<DSPMode> mode_{DSPMode::pcm};
     std::atomic<float> gain_{1.0f};

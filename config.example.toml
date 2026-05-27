@@ -26,4 +26,4 @@ ffmpeg_path        = ''                # blank = `ffmpeg`  on PATH
 default_playlist   = ""
 
 [audio]
-output_gain = 1.0
+output_gain = 1.00
