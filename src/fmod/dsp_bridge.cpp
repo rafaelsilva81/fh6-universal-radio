@@ -300,12 +300,12 @@ uint32_t __stdcall DSPBridge::read_callback(void* /*dsp_state*/, float* in_buf, 
     if (!b || !out_buf) return 0;
     const DSPMode m = b->mode();
 
-    // Use only what FMOD allocated: out_buf is pre-sized by FMOD, writing
-    // more channels than requested is a heap overflow that crashes the mixer
-    // a few seconds later. If FMOD wants mono, downmix our stereo.
-    int32_t out_ch = in_channels > 0 ? in_channels : 2;
-    if (out_channels && *out_channels > 0) out_ch = *out_channels;
-    if (out_channels) *out_channels = out_ch;
+    // Force FMOD to treat our DSP output as purely Stereo (2 channels).
+    // This allows the game's 3D panner to correctly spatialize the audio into
+    // the Surround Sound space (5.1/7.1). If we don't do this, the 3D panner
+    // receives a 5.1/7.1 signal and distorts it terribly.
+    if (out_channels) *out_channels = 2;
+    int32_t out_ch = 2;
     const std::size_t total = static_cast<std::size_t>(length) * out_ch;
 
     auto stats = [&] {
@@ -356,8 +356,10 @@ uint32_t __stdcall DSPBridge::read_callback(void* /*dsp_state*/, float* in_buf, 
         for (uint32_t f = 0; f < got_frames; ++f) {
             const float fl = scratch[f * 2 + 0] * scale;
             const float fr = scratch[f * 2 + 1] * scale;
-            const float L  = fl > 1.0f ? 1.0f : (fl < -1.0f ? -1.0f : fl);
-            const float R  = fr > 1.0f ? 1.0f : (fr < -1.0f ? -1.0f : fr);
+            
+            // Soft clipping (analog-style) instead of harsh digital hard-clipping
+            const float L  = std::tanh(fl);
+            const float R  = std::tanh(fr);
 
             float* o = out_buf + static_cast<std::size_t>(produced + f) * out_ch;
             if (out_ch == 1) {
