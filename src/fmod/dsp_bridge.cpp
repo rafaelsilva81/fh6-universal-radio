@@ -40,7 +40,7 @@ constexpr FMODSig kAnchored[] = {
 // FMOD_LOOP_NORMAL: makes the channel loop forever on its source sample.
 // Set once at install time so the placeholder sample doesn't end and
 // drop the channel out from under our DSP.
-constexpr uint32_t kFmodLoopNormal = 0x2;
+constexpr uint32_t kFmodLoopNormal = 0x2 | 0x8;  // FMOD_LOOP_NORMAL | FMOD_2D
 
 // FMOD's `Handle::open` / `Handle::unlock` have no .rdata anchor; we match
 // their (unique) prologues directly.
